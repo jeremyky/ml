@@ -113,10 +113,10 @@ class Tensor:
         def _backward():
             if self.requires_grad:
                 ensure_grad(self)
-                self.grad += Tensor._unbroadcast(out.grad, self.data.shape)
+                self.grad += unbroadcast(out.grad, self.data.shape)
             if other.requires_grad:
                 ensure_grad(self)
-                other.grad += Tensor._unbroadcast(out.grad, other.data.shape)
+                other.grad += unbroadcast(out.grad, other.data.shape)
         # hook into computation graph
         out._backward = _backward
         return out
