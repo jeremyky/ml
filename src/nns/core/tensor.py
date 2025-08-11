@@ -1,41 +1,6 @@
-""" 
-TODO: more ops w/ correct backward
-Neg / Sub / RAdd / RMul
-Mul (elemntwise) w/ broadcasting-safe backward
-Sum / Mean (axis, keepdims)
-Reshape / Transpose (no-op grads w/ shape restore)
-Exp / Log / Pow
-
-TODO: utilities
-detach(): break graph
-item(): get Python scalar from 0-D tensor
-Context manager no_grad() to stop building graph temporarily
-Free graph after backward unless retain_graph = True to avoid memory leaks
-
-TODO: Backward
-add a retain_graph feature: after the topo loop, if not retained, set each nodes ._prev=() and ._backward=lambda:None to free the graph
-check if the seed grad shape matches self.data.shape or broadcastable --> assert early
-
-TODO: Minimal loss + optimizer for training
-MSE loss: (pred-target).pow(2).mean()
-SGD: Step over a list of tesnors w/ requires_grad = True
-
-TODO: Tests
-ReLU on/off
-Add w/ broadcasting
-Sum / Mean shapes
-Matmul gradient check
-Mul rule (x * y).sum().backward() → x.grad == y.data, y.grad == x.data.
-"""
-
-
-
-
-
 from __future__ import annotations
-# labels to describe expected variables, function parameters, return values
 import numpy as np
-# fast computation
+from .utils import ensure_grad, unbroadcast, topo_sort
 
 """
 Tiny Tensor
@@ -114,13 +79,13 @@ class Tensor:
         # this is important when the same tensor is being used in multiple places, i.e. x + x
         if grad is None:
             grad = np.ones_like(self.data)
-        Tensor._ensure_grad(self)
+        ensure_grad(self)
         self.grad += grad
         # perform reverse-mode autodiff: 
         # topologically sort all tensors that contributed to this one
         # run _backward() on each tensor in the correct order (outputs --> inputs)
         # each _backward() uses the gradient of the output to compute and store the gradient for its own inputs
-        for t in Tensor.topo_sort(self):
+        for t in topo_sort(self):
             t._backward()
 
     """
@@ -147,10 +112,10 @@ class Tensor:
         out = Tensor(self.data + other.data, requires_grad = requires, _op="add", _prev=(self,other))    
         def _backward():
             if self.requires_grad:
-                Tensor._ensure_grad(self)
+                ensure_grad(self)
                 self.grad += Tensor._unbroadcast(out.grad, self.data.shape)
             if other.requires_grad:
-                Tensor._ensure_grad(self)
+                ensure_grad(self)
                 other.grad += Tensor._unbroadcast(out.grad, other.data.shape)
         # hook into computation graph
         out._backward = _backward
@@ -172,11 +137,11 @@ class Tensor:
 
         def _backward():
             if self.requires_grad:
-                Tensor._ensure_grad(self)
-                self.grad += Tensor._unbroadcast(out.grad * other.data, self.data.shape)
+                ensure_grad(self)
+                self.grad += unbroadcast(out.grad * other.data, self.data.shape)
             if other.requires_grad:
-                Tensor._ensure_grad(other)
-                other.grad += Tensor._unbroadcast(out.grad * self.data, other.data.shape)
+                ensure_grad(other)
+                other.grad += unbroadcast(out.grad * self.data, other.data.shape)
         out._backward = _backward
         return out
     
@@ -185,7 +150,7 @@ class Tensor:
 
         def _backward():
             if self.requires_grad:
-                Tensor._ensure_grad(self)
+                ensure_grad(self)
                 self.grad += (p * (self.data ** (p-1))) * out.grad
         out._backward = _backward
         return out
@@ -216,10 +181,10 @@ class Tensor:
         out = Tensor(self.data @ other.data, requires_grad=requires, _op="matmul", _prev=(self, other))        # This function tells autograd how to compute the gradients of the inputs given the gradient of the output (out.grad)
         def _backward():
             if self.requires_grad:
-                Tensor._ensure_grad(self)
+                ensure_grad(self)
                 self.grad += out.grad @ other.data.T
             if other.requires_grad:
-                Tensor._ensure_grad(self)
+                ensure_grad(self)
                 other.grad += self.data.T @ out.grad
         # Save the backward() closure so it can be called via .backward()
         out._backward = _backward
@@ -239,7 +204,7 @@ class Tensor:
             count = np.prod([self.data.shape[a] for a in axes])
         def _backward():
             if self.requires_grad:
-                Tensor._ensure_grad(self)
+                ensure_grad(self)
                 g = out.grad / count
                 if axis is not None and not keepdims:
                     # re-expand grad to original shape
@@ -283,19 +248,6 @@ class Tensor:
         return out
     
     
-    """
-    backward
-    
-    placeholder method
-    calling _backward() on a Tneosr that hasn't had a real _backward function attached to it will do nothing
-    default fallback for when we create a Tensor if it wasn't produced by any operation
-    theres no gradient to compute from a prior operation, so leave _backward as a no-op
-    """
-    # can be removed since we fixed with self._backward
-    @staticmethod
-    def _backward(self):
-        # empty stub
-        pass 
     
         
     """
@@ -315,7 +267,7 @@ class Tensor:
     - _prev are edges from input tensors to the current tensor
     - we need to compute gradients starting from outputs and flowing back to inputs
     - do this using depth-first saerch (DFS) to build this order
-    """
+    
     @staticmethod
     def topo_sort(root: "Tensor"):
         # DFS topological order
@@ -329,20 +281,23 @@ class Tensor:
                 order.append(v) # add after all inputs visited
         build(root)
         return reversed(order) # reverse to get output to inputs to be used for backward()
-    
+    """
+
     """
     some operations will crash if .grad is None
     safer and memory-efficient to lazy-init grads when needed
     utilize _ensure_grad helper function
-    """
+    
     @staticmethod
     def _ensure_grad(t: "Tensor"):
         if t.grad is None:
             t.grad = np.zeros_like(t.data)
+    """
+
 
     """
     relying on NumPy broadcasting in forward, we must unbroadcast the gradient in backward so shapes match inputs
-    """
+    
     @staticmethod
     def _unbroadcast(grad, target_shape):
         # reduce grad to target_shape by summing along broadcasted axes
@@ -352,6 +307,8 @@ class Tensor:
             if t == 1 and g != 1:
                 grad = grad.sum(axis=i, keepdims=True)
             return grad
+
+            """
         
 
 # Sanity Test
