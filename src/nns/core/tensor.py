@@ -1,3 +1,37 @@
+""" 
+TODO: more ops w/ correct backward
+Neg / Sub / RAdd / RMul
+Mul (elemntwise) w/ broadcasting-safe backward
+Sum / Mean (axis, keepdims)
+Reshape / Transpose (no-op grads w/ shape restore)
+Exp / Log / Pow
+
+TODO: utilities
+detach(): break graph
+item(): get Python scalar from 0-D tensor
+Context manager no_grad() to stop building graph temporarily
+Free graph after backward unless retain_graph = True to avoid memory leaks
+
+TODO: Backward
+add a retain_graph feature: after the topo loop, if not retained, set each nodes ._prev=() and ._backward=lambda:None to free the graph
+check if the seed grad shape matches self.data.shape or broadcastable --> assert early
+
+TODO: Minimal loss + optimizer for training
+MSE loss: (pred-target).pow(2).mean()
+SGD: Step over a list of tesnors w/ requires_grad = True
+
+TODO: Tests
+ReLU on/off
+Add w/ broadcasting
+Sum / Mean shapes
+Matmul gradient check
+Mul rule (x * y).sum().backward() → x.grad == y.data, y.grad == x.data.
+"""
+
+
+
+
+
 from __future__ import annotations
 # labels to describe expected variables, function parameters, return values
 import numpy as np
@@ -108,7 +142,7 @@ class Tensor:
     def __add__(self, other):
         # if other is not a Tensor (i.e. just a number), convert it to one. Allows support for Tensor + float or Tensor + np.array
         other = other if isinstance(other, Tensor) else Tensor(other)
-        requires = self.requires_grad or others.requires_grad
+        requires = self.requires_grad or other.requires_grad
         # Forward Pass: perform elementwise addition using NumPy, wrap in new Tnesor, requires_grad is True if either input needs gradients
         out = Tensor(self.data + other.data, requires_grad = requires, _op="add", _prev=(self,other))    
         def _backward():
@@ -119,6 +153,40 @@ class Tensor:
                 Tensor._ensure_grad(self)
                 other.grad += Tensor._unbroadcast(out.grad, other.data.shape)
         # hook into computation graph
+        out._backward = _backward
+        return out
+    
+    def __radd__(self, other):
+        return self.__add__(other)
+    
+    def __neg__(self):
+        return self * -1.0
+    
+    def __sub__(self, other):
+        return self + (- (other if isinstance(other, Tensor) else Tensor(other)))
+    
+    def __mul__(self, other):
+        other = other if isinstance(other, Tensor) else Tensor(other)
+        requires = self.requires_grad or other.requires_grad
+        out = Tensor(self.data * other.data, requires_grad=requires, _op="mul", _prev=(self,other))
+
+        def _backward():
+            if self.requires_grad:
+                Tensor._ensure_grad(self)
+                self.grad += Tensor._unbroadcast(out.grad * other.data, self.data.shape)
+            if other.requires_grad:
+                Tensor._ensure_grad(other)
+                other.grad += Tensor._unbroadcast(out.grad * self.data, other.data.shape)
+        out._backward = _backward
+        return out
+    
+    def pow(self, p: "float"):
+        out = Tensor(self.data ** p, requires_grad=self.requires_grad, _op=f"pow{p}", _prev=(self,))
+
+        def _backward():
+            if self.requires_grad:
+                Tensor._ensure_grad(self)
+                self.grad += (p * (self.data ** (p-1))) * out.grad
         out._backward = _backward
         return out
 
@@ -159,6 +227,29 @@ class Tensor:
         # Return resulting Tensor with forward result and attached gradient logic
         return out
     
+
+    def mean(self, axis=None, keepdims=False):
+        out = Tensor(self.data.mean(axis=axis, keepdims=keepdims),
+                    requires_grad=self.requires_grad, _op="mean", _prev=(self,))
+        # number of elements reduced
+        if axis is None:
+            count = self.data.size
+        else:
+            axes = (axis,) if isinstance(axis, int) else tuple(axis)
+            count = np.prod([self.data.shape[a] for a in axes])
+        def _backward():
+            if self.requires_grad:
+                Tensor._ensure_grad(self)
+                g = out.grad / count
+                if axis is not None and not keepdims:
+                    # re-expand grad to original shape
+                    axes = (axis,) if isinstance(axis, int) else tuple(axis)
+                    for ax in sorted(axes):
+                        g = np.expand_dims(g, ax)
+                self.grad += np.ones_like(self.data) * g
+        out._backward = _backward
+        return out
+    
     """
     relu
 
@@ -190,6 +281,7 @@ class Tensor:
         # tells autograd that this tensor came from self
         out._prev = {self}
         return out
+    
     
     """
     backward
@@ -274,3 +366,5 @@ y.backward()  # seed = 1
 print("y:", y.data)
 print("x.grad:", x.grad)
 print("W.grad:", W.grad)
+
+
